@@ -172,7 +172,8 @@ enum TypeSafeCredentialError: LocalizedError, Equatable {
     var errorDescription: String? {
         switch self {
         case .missingCookie:
-            "No TypeSafe session cookies found. Sign in at console.typesafe.ai/settings/billing or paste a Cookie header."
+            "No TypeSafe session cookies found. Sign in at console.typesafe.ai/settings/billing "
+                + "or paste a Cookie header."
         case .invalidCookie:
             "TypeSafe needs a nonempty Cookie header from the billing page."
         case .disabled:
