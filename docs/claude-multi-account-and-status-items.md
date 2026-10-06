@@ -136,6 +136,26 @@ last refresh, adapter errors, and a link to the upstream project; CodexBar shoul
 - Keep expired, missing, unknown, and Keychain-inaccessible credential slots non-actionable. Never auto-switch, launch
   sessions, add/import/export/purge accounts, or mutate credentials directly.
 
+## Fork addition: Claude Code seats source
+
+`claudeAccountSource = "seats"` (fork-only) reads subscription usage for every Claude Code seat
+without an external adapter. Each seat is a `CLAUDE_CONFIG_DIR`; the reader probes it through the
+same bounded Claude CLI `/usage` machinery as the ambient card with that seat's directory in the
+probe environment, so every seat's credentials stay Claude Code-owned (each probe reads and
+refreshes only its own Keychain item). Contract:
+
+- Configure seats as `name=path` entries (`claudeSeats`), comma or newline separated. An empty
+  list discovers `~/.claude` and `~/.claude-*` directories holding a `.claude.json`.
+- Rows reuse the claude-swap projection: seat name is the display alias, slot number is identity,
+  the first seat is marked active (it is the ambient credential), and
+  `supportsAccountSwitching` is always false. Seat cards are inspect-only; switching stays
+  claude-swap-owned and the switch path refuses to run in seats mode.
+- A failed seat renders as an unavailable card and its error joins the adapter error text;
+  sibling seats are unaffected. Cancellation stays global.
+- Background refresh ticks reuse per-seat probes within the 15-minute expensive-local-work floor
+  (`ClaudeSeatsProbeCache`); a cached snapshot expires when any of its windows resets.
+  User-initiated refreshes always probe. Row timestamps carry the real measurement time.
+
 ## Provider-neutral account model
 
 Introduce one projection used by menus and status items rather than teaching status item code about Claude OAuth:

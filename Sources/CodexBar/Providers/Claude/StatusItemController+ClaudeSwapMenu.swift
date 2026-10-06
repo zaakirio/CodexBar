@@ -15,7 +15,10 @@ extension StatusItemController {
             errorAccountID: self.store.claudeSwapTransientState.lastErrorAccountID,
             inspectedAccountID: self.claudeSwapInspectedAccountID)
         if display.showsSwitcher {
-            let switcherHeading = NSMenuItem(title: L("Switch Claude Code account"), action: nil, keyEquivalent: "")
+            let switcherHeading = NSMenuItem(
+                title: L(self.store.usesClaudeSeatAccounts ? "Claude Code seats" : "Switch Claude Code account"),
+                action: nil,
+                keyEquivalent: "")
             switcherHeading.isEnabled = false
             menu.addItem(switcherHeading)
             let item = NSMenuItem()
@@ -107,7 +110,7 @@ extension StatusItemController {
         else { return }
         self.advanceMenuInteraction(for: menu)
         self.claudeSwapInspectedAccountID = nil
-        let executablePath = self.settings.claudeSwapExecutablePath
+        let configuration = ClaudeAccountsConfiguration(settings: self.settings)
         let configurationGeneration = self.store.claudeSwapTransientState.configurationGeneration
         let interactionGeneration = menu.flatMap {
             self.menuSession.menuInteractionGeneration(for: ObjectIdentifier($0))
@@ -117,7 +120,7 @@ extension StatusItemController {
             self.scheduleOpenRootMenuDataRebuildIfStillVisible(menu, provider: .claude) { [weak self, weak menu] in
                 guard let self, let menu else { return false }
                 return self.store.isCurrentClaudeSwapConfiguration(
-                    executablePath: executablePath,
+                    configuration,
                     configurationGeneration: configurationGeneration) &&
                     self.menuSession.isCurrentMenuInteraction(interactionGeneration, for: ObjectIdentifier(menu)) &&
                     self.claudeSwapInspectedAccountID == nil &&

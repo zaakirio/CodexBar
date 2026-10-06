@@ -22,14 +22,20 @@ final class ClaudeProviderRuntime: ProviderRuntime {
         let configuration = Configuration(
             providerEnabled: context.store.isEnabled(.claude),
             enabled: context.settings.claudeSwapEnabled,
-            executablePath: context.settings.claudeSwapExecutablePath)
+            source: context.settings.claudeAccountSource,
+            executablePath: context.settings.claudeSwapExecutablePath,
+            seats: context.settings.claudeSeats)
         guard configuration != self.lastSwapConfiguration else { return }
         self.lastSwapConfiguration = configuration
 
         // Cancel before clearing so an old executable can never repopulate the menu.
         context.store.clearClaudeSwapAccountState()
-        guard configuration.providerEnabled, configuration.enabled, !configuration.executablePath.isEmpty else {
-            return
+        guard configuration.providerEnabled, configuration.enabled else { return }
+        switch configuration.source {
+        case .seats:
+            break
+        case .claudeSwap:
+            guard !configuration.executablePath.isEmpty else { return }
         }
         context.store.scheduleClaudeSwapAccountRefresh()
     }
@@ -37,6 +43,8 @@ final class ClaudeProviderRuntime: ProviderRuntime {
     private struct Configuration: Equatable {
         let providerEnabled: Bool
         let enabled: Bool
+        let source: ClaudeAccountSource
         let executablePath: String
+        let seats: String
     }
 }

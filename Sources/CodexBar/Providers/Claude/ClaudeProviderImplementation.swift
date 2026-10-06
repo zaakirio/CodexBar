@@ -30,6 +30,8 @@ struct ClaudeProviderImplementation: ProviderImplementation {
         _ = settings.claudeSwapEnabled
         _ = settings.claudeSwapShowSingleAccount
         _ = settings.claudeSwapExecutablePath
+        _ = settings.claudeAccountSource
+        _ = settings.claudeSeats
     }
 
     @MainActor
@@ -152,9 +154,9 @@ struct ClaudeProviderImplementation: ProviderImplementation {
                 onAppearWhenEnabled: nil),
             ProviderSettingsToggleDescriptor(
                 id: "claude-swap-accounts",
-                title: "Read accounts from claude-swap",
-                subtitle: "Shows usage and lets you switch accounts through `cswap`. " +
-                    "Credentials stay managed by claude-swap; CodexBar never reads them.",
+                title: "Show all Claude accounts",
+                subtitle: "Per-account usage cards. Source: `cswap`, or Claude Code seats read " +
+                    "through their own CLAUDE_CONFIG_DIR. Credentials stay Claude-owned.",
                 binding: claudeSwapBinding,
                 statusText: { Self.claudeSwapStatusText(store: context.store, settings: context.settings) },
                 actions: [],
@@ -167,7 +169,7 @@ struct ClaudeProviderImplementation: ProviderImplementation {
             ProviderSettingsToggleDescriptor(
                 id: "claude-swap-show-single-account",
                 title: "Show account card when only one account is available",
-                subtitle: "Prefer claude-swap over the ambient Claude account presentation.",
+                subtitle: "Prefer multi-account cards over the ambient Claude account presentation.",
                 binding: claudeSwapShowSingleAccountBinding,
                 statusText: nil,
                 actions: [],
@@ -182,19 +184,24 @@ struct ClaudeProviderImplementation: ProviderImplementation {
     @MainActor
     private static func claudeSwapStatusText(store: UsageStore, settings: SettingsStore) -> String? {
         guard settings.claudeSwapEnabled else { return nil }
-        if settings.claudeSwapExecutablePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return "Set the cswap executable path below."
+        let accountCountText: () -> String = {
+            let accounts = store.claudeSwapAccountSnapshots.count
+            return accounts == 1 ? "1 account" : "\(accounts) accounts"
         }
         var parts: [String] = []
-        if let version = store.claudeSwapDetectedVersion {
+        if settings.claudeAccountSource == .seats {
+            parts.append(settings.claudeSeats.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? "Seats: discovered from ~/.claude and ~/.claude-* config dirs"
+                : "Seats: configured list")
+        } else if settings.claudeSwapExecutablePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "Set the cswap executable path below."
+        } else if let version = store.claudeSwapDetectedVersion {
             parts.append("claude-swap \(version)")
         }
         if let error = store.claudeSwapLastError {
             parts.append(error)
         } else if let refreshedAt = store.claudeSwapLastRefreshAt {
-            let accounts = store.claudeSwapAccountSnapshots.count
-            let accountsText = accounts == 1 ? "1 account" : "\(accounts) accounts"
-            parts.append("\(accountsText), updated \(refreshedAt.relativeDescription())")
+            parts.append("\(accountCountText()), updated \(refreshedAt.relativeDescription())")
         }
         return parts.isEmpty ? nil : parts.joined(separator: " — ")
     }
@@ -227,6 +234,12 @@ struct ClaudeProviderImplementation: ProviderImplementation {
             return "Choosing \"Never prompt\" can make OAuth unavailable; use Web/CLI when needed."
         }
 
+        let accountSourceBinding = context.rawValueBinding(\.claudeAccountSource, fallback: .claudeSwap)
+        let accountSourceOptions: [ProviderSettingsPickerOption] = [
+            ProviderSettingsPickerOption(id: "claude-swap", title: "claude-swap (cswap)"),
+            ProviderSettingsPickerOption(id: "seats", title: "Claude Code seats"),
+        ]
+
         return [
             ProviderSettingsPickerDescriptor(
                 id: "claude-usage-source",
@@ -241,6 +254,15 @@ struct ClaudeProviderImplementation: ProviderImplementation {
                     let label = context.store.sourceLabel(for: .claude)
                     return label == "auto" ? nil : label
                 }),
+            ProviderSettingsPickerDescriptor(
+                id: "claude-account-source",
+                title: "Account source",
+                subtitle: "Seats read each CLAUDE_CONFIG_DIR's own usage; cswap delegates to its slots.",
+                binding: accountSourceBinding,
+                options: accountSourceOptions,
+                isVisible: { context.settings.claudeSwapEnabled },
+                isEnabled: nil,
+                onChange: nil),
             ProviderSettingsPickerDescriptor(
                 id: "claude-keychain-prompt-policy",
                 title: "Keychain prompt policy",
@@ -274,6 +296,18 @@ struct ClaudeProviderImplementation: ProviderImplementation {
     @MainActor
     func settingsFields(context: ProviderSettingsContext) -> [ProviderSettingsFieldDescriptor] {
         [
+            ProviderSettingsFieldDescriptor(
+                id: "claude-seats",
+                title: "Seats",
+                subtitle: "Optional. Comma-separated name=path list; leave empty to discover " +
+                    "~/.claude and ~/.claude-* seats automatically.",
+                kind: .plain,
+                placeholder: "claude=~/.claude, claude2=~/.claude-b, claude3=~/.claude-c",
+                binding: context.binding(\.claudeSeats),
+                actions: [],
+                isVisible: {
+                    context.settings.claudeSwapEnabled && context.settings.claudeAccountSource == .seats
+                }),
             ProviderSettingsFieldDescriptor(
                 id: "claude-admin-api-key",
                 title: "Admin API key",

@@ -340,6 +340,8 @@ final class UsageStore {
 
     @ObservationIgnored let codexFetcher: UsageFetcher
     @ObservationIgnored let claudeFetcher: any ClaudeUsageFetching
+    /// Per-seat recent CLI probes behind the seats background spawn floor.
+    @ObservationIgnored let claudeSeatsProbeCache = ClaudeSeatsProbeCache()
     @ObservationIgnored let costUsageFetcher: CostUsageFetcher
     @ObservationIgnored let browserDetection: BrowserDetection
     @ObservationIgnored private let registry: ProviderRegistry

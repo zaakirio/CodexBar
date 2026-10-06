@@ -82,6 +82,29 @@ extension SettingsStore {
                 value: newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "cleared" : "set")
         }
     }
+
+    var claudeAccountSource: ClaudeAccountSource {
+        get { self.configSnapshot.providerConfig(for: .claude)?.claudeAccountSource ?? .claudeSwap }
+        set {
+            self.updateProviderConfig(provider: .claude) { entry in
+                entry.claudeAccountSource = newValue
+            }
+            self.logProviderModeChange(provider: .claude, field: "claudeAccountSource", value: newValue.rawValue)
+        }
+    }
+
+    var claudeSeats: String {
+        get { self.configSnapshot.providerConfig(for: .claude)?.claudeSeats ?? "" }
+        set {
+            self.updateProviderConfig(provider: .claude) { entry in
+                entry.claudeSeats = self.normalizedConfigValue(newValue)
+            }
+            self.logProviderModeChange(
+                provider: .claude,
+                field: "claudeSeats",
+                value: newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "cleared" : "set")
+        }
+    }
 }
 
 extension SettingsStore {

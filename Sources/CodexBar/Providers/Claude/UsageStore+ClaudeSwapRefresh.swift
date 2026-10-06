@@ -19,13 +19,51 @@ struct ClaudeSwapTransientState {
     var versionProbeGeneration: UInt64 = 0
 }
 
+/// Identity of the multi-account Claude source configuration. Any change
+/// invalidates in-flight refreshes and switch transactions.
+struct ClaudeAccountsConfiguration: Equatable {
+    let source: ClaudeAccountSource
+    let executablePath: String
+    let seats: String
+
+    init(source: ClaudeAccountSource, executablePath: String, seats: String) {
+        self.source = source
+        self.executablePath = executablePath
+        self.seats = seats
+    }
+
+    @MainActor
+    init(settings: SettingsStore) {
+        self.init(
+            source: settings.claudeAccountSource,
+            executablePath: settings.claudeSwapExecutablePath,
+            seats: settings.claudeSeats)
+    }
+
+    var usesSeats: Bool {
+        self.source == .seats
+    }
+
+    var usesExecutable: Bool {
+        !self.executablePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+}
+
 extension UsageStore {
-    /// True when the opt-in claude-swap adapter should run alongside the
+    /// Seats mode replaces per-slot credential switching with read-only usage
+    /// cards, so seat menus describe themselves instead of offering a switch.
+    var usesClaudeSeatAccounts: Bool {
+        ClaudeAccountsConfiguration(settings: self.settings).usesSeats
+    }
+
+    /// True when the opt-in multi-account Claude source should run alongside the
     /// ambient Claude refresh. Listing is read-only; explicit account activation
     /// stays external-process-owned and never exposes credentials to CodexBar.
     func shouldFetchClaudeSwapAccounts() -> Bool {
-        self.isEnabled(.claude) && self.settings.claudeSwapEnabled &&
-            !self.settings.claudeSwapExecutablePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        guard self.isEnabled(.claude), self.settings.claudeSwapEnabled else { return false }
+        let configuration = ClaudeAccountsConfiguration(settings: self.settings)
+        if configuration.usesSeats { return true }
+        return configuration.usesExecutable
     }
 
     /// The active claude-swap account's usage snapshot when the adapter owns Claude
@@ -91,7 +129,21 @@ extension UsageStore {
     }
 
     func refreshClaudeSwapAccounts(generation: UInt64? = nil) async {
-        let executablePath = self.settings.claudeSwapExecutablePath
+        let configuration = ClaudeAccountsConfiguration(settings: self.settings)
+        if configuration.usesSeats {
+            await self.refreshClaudeSeatAccounts(configuration: configuration, generation: generation)
+        } else {
+            await self.refreshClaudeSwapExecutableAccounts(
+                configuration: configuration,
+                generation: generation)
+        }
+    }
+
+    private func refreshClaudeSwapExecutableAccounts(
+        configuration: ClaudeAccountsConfiguration,
+        generation: UInt64?) async
+    {
+        let executablePath = configuration.executablePath
         await self.probeClaudeSwapVersionIfNeeded(executablePath: executablePath)
 
         do {
@@ -100,7 +152,7 @@ extension UsageStore {
                 from: list,
                 previousAccounts: ClaudeSwapRetainedUsageStore.previousAccounts(
                     inMemory: self.claudeSwapAccountSnapshots))
-            guard self.isCurrentClaudeSwapRefresh(executablePath: executablePath, generation: generation) else {
+            guard self.isCurrentClaudeSwapRefresh(configuration: configuration, generation: generation) else {
                 return
             }
             ClaudeSwapRetainedUsageStore.save(snapshots)
@@ -112,7 +164,7 @@ extension UsageStore {
         } catch is CancellationError {
             return
         } catch {
-            guard self.isCurrentClaudeSwapRefresh(executablePath: executablePath, generation: generation) else {
+            guard self.isCurrentClaudeSwapRefresh(configuration: configuration, generation: generation) else {
                 return
             }
             // Retain the last successful snapshots as stale data; the settings
@@ -126,15 +178,73 @@ extension UsageStore {
         }
     }
 
+    private func refreshClaudeSeatAccounts(
+        configuration: ClaudeAccountsConfiguration,
+        generation: UInt64?) async
+    {
+        let seats = ClaudeSeatPlan.resolve(configured: configuration.seats)
+        guard !seats.isEmpty else {
+            self.recordClaudeSwapError(ClaudeSeatsReaderError.noSeatsConfigured.localizedDescription)
+            return
+        }
+        do {
+            let result = try await ClaudeSeatsAccountReader.readAccountList(
+                seats: seats,
+                browserDetection: self.browserDetection,
+                environment: self.environmentBase,
+                force: ProviderInteractionContext.current == .userInitiated,
+                cache: self.claudeSeatsProbeCache)
+            let snapshots = ClaudeSwapAccountProjection.accountSnapshots(
+                from: result.list,
+                previousAccounts: ClaudeSwapRetainedUsageStore.previousAccounts(
+                    inMemory: self.claudeSwapAccountSnapshots))
+            guard self.isCurrentClaudeSwapRefresh(configuration: configuration, generation: generation) else {
+                return
+            }
+            ClaudeSwapRetainedUsageStore.save(snapshots)
+            self.claudeSwapAccountSnapshots = snapshots
+            self.claudeSwapLastRefreshAt = Date()
+            // Failed seats stay visible as unavailable cards; surface why beside them.
+            self.claudeSwapLastError = Self.seatErrorSummary(result.seatErrors)
+            self.claudeSwapRevision &+= 1
+            self.persistWidgetSnapshot(reason: "claude-swap-accounts")
+        } catch is CancellationError {
+            return
+        } catch {
+            guard self.isCurrentClaudeSwapRefresh(configuration: configuration, generation: generation) else {
+                return
+            }
+            self.recordClaudeSwapError(
+                (error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
+        }
+    }
+
+    private func recordClaudeSwapError(_ message: String) {
+        if self.claudeSwapLastError != message {
+            self.claudeSwapLastError = message
+            self.claudeSwapRevision &+= 1
+        }
+    }
+
+    private static func seatErrorSummary(_ seatErrors: [String: String]) -> String? {
+        guard !seatErrors.isEmpty else { return nil }
+        return seatErrors
+            .sorted { lhs, rhs in lhs.key < rhs.key }
+            .map { name, message in "\(name): \(message)" }
+            .joined(separator: " · ")
+    }
+
     /// Activates one account through the configured claude-swap executable.
     /// The numeric slot comes from the already validated list payload; requests
     /// are serialized so two credential transactions can never overlap.
+    /// Seat rows are inspect-only, so switching stays claude-swap-owned.
     func switchClaudeSwapAccount(
         _ accountID: ProviderAccountIdentity,
         progressDidChange: (@MainActor () -> Void)? = nil)
     {
         guard self.claudeSwapTransientState.task == nil,
               self.shouldFetchClaudeSwapAccounts(),
+              !ClaudeAccountsConfiguration(settings: self.settings).usesSeats,
               accountID.source == ClaudeSwapAccountProjection.sourceName,
               let account = self.claudeSwapAccountSnapshots.first(where: { $0.id == accountID }),
               account.canActivate,
@@ -144,7 +254,7 @@ extension UsageStore {
             return
         }
 
-        let executablePath = self.settings.claudeSwapExecutablePath
+        let configuration = ClaudeAccountsConfiguration(settings: self.settings)
         let configurationGeneration = self.claudeSwapTransientState.configurationGeneration
         self.claudeSwapTransientState.switchingAccountID = accountID
         self.claudeSwapTransientState.switchPhase = .activating
@@ -156,7 +266,7 @@ extension UsageStore {
             var switchError: String?
             do {
                 _ = try await ClaudeSwapAccountReader.switchAccount(
-                    executablePath: executablePath,
+                    executablePath: configuration.executablePath,
                     accountNumber: accountNumber)
             } catch {
                 switchError = (error as? LocalizedError)?.errorDescription
@@ -165,7 +275,7 @@ extension UsageStore {
 
             guard let self else { return }
             if self.isCurrentClaudeSwapConfiguration(
-                executablePath: executablePath,
+                configuration,
                 configurationGeneration: configurationGeneration)
             {
                 self.claudeSwapTransientState.lastError = switchError
@@ -181,7 +291,7 @@ extension UsageStore {
                 let waiter = Task<Void, Error> { await ambient.value }
                 if case .timedOut = await BoundedTaskJoin(sourceTask: waiter).value(joinGrace: .seconds(5)),
                    self.isCurrentClaudeSwapConfiguration(
-                       executablePath: executablePath,
+                       configuration,
                        configurationGeneration: configurationGeneration),
                    self.claudeSwapRefreshTask == previousAdapterTask
                 {
@@ -190,7 +300,7 @@ extension UsageStore {
                 }
                 // The ambient refresh schedules this independent read; a replacement read still owns reconciliation.
                 while self.isCurrentClaudeSwapConfiguration(
-                    executablePath: executablePath,
+                    configuration,
                     configurationGeneration: configurationGeneration),
                     let adapterTask = self.claudeSwapRefreshTask
                 {
@@ -199,7 +309,7 @@ extension UsageStore {
                 }
             }
             let isCurrent = self.isCurrentClaudeSwapConfiguration(
-                executablePath: executablePath,
+                configuration,
                 configurationGeneration: configurationGeneration)
             let currentError = isCurrent ? switchError : nil
             self.claudeSwapTransientState.task = nil
@@ -219,24 +329,30 @@ extension UsageStore {
         let generation = self.claudeSwapTransientState.versionProbeGeneration
         guard let version = await ClaudeSwapAccountReader.readVersion(executablePath: executablePath),
               self.claudeSwapTransientState.versionProbeGeneration == generation,
-              self.isCurrentClaudeSwapRefresh(executablePath: executablePath, generation: nil)
+              self.isCurrentClaudeSwapRefresh(
+                  configuration: ClaudeAccountsConfiguration(settings: self.settings),
+                  generation: nil)
         else { return }
         self.claudeSwapTransientState.versionProbedPath = executablePath
         self.claudeSwapDetectedVersion = version
     }
 
-    func isCurrentClaudeSwapRefresh(executablePath: String, generation: UInt64?) -> Bool {
+    func isCurrentClaudeSwapRefresh(
+        configuration: ClaudeAccountsConfiguration,
+        generation: UInt64?) -> Bool
+    {
         !Task.isCancelled &&
             self.isCurrentProviderRefreshGeneration(.claude, generation: generation) &&
-            self.isCurrentClaudeSwapConfiguration(executablePath: executablePath)
+            self.isCurrentClaudeSwapConfiguration(configuration)
     }
 
     func isCurrentClaudeSwapConfiguration(
-        executablePath: String,
+        _ configuration: ClaudeAccountsConfiguration,
         configurationGeneration: UInt64? = nil) -> Bool
     {
-        self.isEnabled(.claude) && self.settings.claudeSwapEnabled &&
-            self.settings.claudeSwapExecutablePath == executablePath &&
+        self.isEnabled(.claude) &&
+            self.settings.claudeSwapEnabled &&
+            configuration == ClaudeAccountsConfiguration(settings: self.settings) &&
             (configurationGeneration == nil ||
                 self.claudeSwapTransientState.configurationGeneration == configurationGeneration)
     }

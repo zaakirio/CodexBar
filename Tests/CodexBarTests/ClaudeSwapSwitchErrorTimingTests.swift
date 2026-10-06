@@ -260,10 +260,11 @@ struct ClaudeSwapSwitchErrorTimingTests {
         fixture.settings.claudeSwapEnabled = true
         let path = "/synthetic/read-only-cswap"
         fixture.settings.claudeSwapExecutablePath = path
-        #expect(fixture.store.isCurrentClaudeSwapRefresh(executablePath: path, generation: nil))
+        let configuration = ClaudeAccountsConfiguration(settings: fixture.settings)
+        #expect(fixture.store.isCurrentClaudeSwapRefresh(configuration: configuration, generation: nil))
         let cancelled = Task { @MainActor in
             withUnsafeCurrentTask { $0?.cancel() }
-            return fixture.store.isCurrentClaudeSwapRefresh(executablePath: path, generation: nil)
+            return fixture.store.isCurrentClaudeSwapRefresh(configuration: configuration, generation: nil)
         }
         #expect(await cancelled.value == false)
     }

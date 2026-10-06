@@ -33,6 +33,38 @@ struct ClaudeSwapSettingsPlacementTests {
     }
 
     @Test
+    func `claude seats source owns its field and picker`() throws {
+        let fixture = try ProviderSettingsDescriptorTests()
+            .makeSettingsFixture(suite: "ProviderSettingsDescriptorTests-claude-seats")
+        let context = fixture.settingsContext(provider: .claude)
+        let implementation = ClaudeProviderImplementation()
+
+        let field = try #require(implementation.settingsFields(context: context).first {
+            $0.id == "claude-seats"
+        })
+        #expect(field.isVisible?() == false)
+
+        let picker = try #require(implementation.settingsPickers(context: context).first {
+            $0.id == "claude-account-source"
+        })
+        #expect(picker.isVisible?() == false)
+
+        fixture.settings.claudeSwapEnabled = true
+        #expect(picker.isVisible?() == true)
+        #expect(field.isVisible?() == false)
+
+        picker.binding.wrappedValue = ClaudeAccountSource.seats.rawValue
+        #expect(fixture.settings.claudeAccountSource == .seats)
+        #expect(field.isVisible?() == true)
+
+        field.binding.wrappedValue = "claude=~/.claude, claude2=~/.claude-b"
+        #expect(fixture.settings.claudeSeats == "claude=~/.claude, claude2=~/.claude-b")
+
+        let seats = ClaudeSeatPlan.parse(fixture.settings.claudeSeats)
+        #expect(seats.map(\.name) == ["claude", "claude2"])
+    }
+
+    @Test
     func `render synthetic claude swap settings proof`() throws {
         guard let directory = ProcessInfo.processInfo.environment["CODEXBAR_CLAUDE_PRESENTATION_PROOF_DIR"] else {
             return
